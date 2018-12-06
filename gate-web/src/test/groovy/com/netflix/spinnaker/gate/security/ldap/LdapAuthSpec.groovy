@@ -40,14 +40,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultHandlers.print
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*
 
-@Slf4j
-@TestPropertySource("/ldap.properties")
-@GateSystemTest
-@ContextConfiguration(
-    classes = [Main, LdapSsoConfig, LdapTestConfig],
-    initializers = YamlFileApplicationContextInitializer
-)
-class LdapAuthSpec extends Specification {
+class BaseLDAPSpec extends Specification {
 
   @Autowired
   WebApplicationContext wac
@@ -64,6 +57,27 @@ class LdapAuthSpec extends Specification {
   def cleanup() {
     ApacheDSServer.stopServer()
   }
+
+  static class LdapTestConfig {
+    @Autowired
+    LdapSsoConfig ldapSsoConfig(LdapSsoConfig config){
+      ApacheDSServer.startServer("classpath:ldap-server.ldif")
+      Integer ldapPort = ApacheDSServer.getServerPort()
+      log.debug("Setting LDAP server port to $ldapPort")
+      config.ldapConfigProps.url = config.ldapConfigProps.url.replaceFirst("5555", ldapPort.toString())
+      return config
+    }
+  }
+}
+
+@Slf4j
+@TestPropertySource("/ldap.properties")
+@GateSystemTest
+@ContextConfiguration(
+    classes = [Main, LdapSsoConfig, LDAPAuthConfig],
+    initializers = YamlFileApplicationContextInitializer
+)
+class LdapAuthSpec extends BaseLDAPSpec {
 
   def "should do ldap authentication"() {
     setup:
@@ -97,20 +111,11 @@ class LdapAuthSpec extends Specification {
     result.response.contentAsString.contains("foo")
   }
 
-  static class LdapTestConfig {
+  static class LDAPAuthConfig extends BaseLDAPSpec.LdapTestConfig {
 
     @Bean
     RedisTestConfig redisTestConfig() {
       new RedisTestConfig()
-    }
-
-    @Autowired
-    LdapSsoConfig ldapSsoConfig(LdapSsoConfig config){
-      ApacheDSServer.startServer("classpath:ldap-server.ldif")
-      Integer ldapPort = ApacheDSServer.getServerPort()
-      log.debug("Setting LDAP server port to $ldapPort")
-      config.ldapConfigProps.url = config.ldapConfigProps.url.replaceFirst("5555", ldapPort.toString())
-      return config
     }
 
     @Bean
@@ -124,6 +129,31 @@ class LdapAuthSpec extends Specification {
           ]
         }
       }
+    }
+  }
+}
+
+@Slf4j
+@TestPropertySource("/ldap.properties")
+@GateSystemTest
+@ContextConfiguration(
+    classes = [Main, LdapSsoConfig, HTTPLdapTestConfig],
+    initializers = YamlFileApplicationContextInitializer
+)
+class HTTPSLdapAuthSpec extends BaseLDAPSpec {
+
+  def "should allow https ldap"() {
+    expect:
+    mockMvc.perform(get("/credentials"))
+           .andExpect(header().string("Location", "https://localhost/login"))
+  }
+
+  static class HTTPLdapTestConfig extends BaseLDAPSpec.LdapTestConfig {
+    @Autowired
+    LdapSsoConfig ldapSsoConfig(LdapSsoConfig config){
+      LdapSsoConfig ssoConfig = super.ldapSsoConfig(config)
+      ssoConfig.entryPoint = new LdapSsoConfig.ExternalSslAwareEntryPoint('https://test/login')
+      return ssoConfig
     }
   }
 }

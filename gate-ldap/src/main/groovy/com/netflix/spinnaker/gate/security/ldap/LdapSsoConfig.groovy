@@ -41,7 +41,19 @@ import org.springframework.security.config.annotation.web.configuration.WebSecur
 import org.springframework.security.core.GrantedAuthority
 import org.springframework.security.core.userdetails.UserDetails
 import org.springframework.security.ldap.userdetails.UserDetailsContextMapper
+import org.springframework.security.web.authentication.LoginUrlAuthenticationEntryPoint
+import org.springframework.security.web.authentication.preauth.AbstractPreAuthenticatedProcessingFilter
 import org.springframework.stereotype.Component
+
+import org.springframework.context.annotation.Bean
+import org.springframework.security.core.AuthenticationException
+import javax.servlet.http.HttpServletRequest
+import javax.servlet.http.HttpServletResponse
+import org.springframework.security.web.authentication.ui.DefaultLoginPageGeneratingFilter
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter
+import com.netflix.spinnaker.gate.config.Service
+import com.netflix.spinnaker.gate.config.ServiceConfiguration
+import org.springframework.beans.factory.annotation.Value
 
 @ConditionalOnExpression('${ldap.enabled:false}')
 @Configuration
@@ -58,13 +70,24 @@ class LdapSsoConfig extends WebSecurityConfigurerAdapter {
   LdapConfigProps ldapConfigProps
 
   @Autowired
+  ExternalSslAwareEntryPoint entryPoint
+
+  @Autowired
   LdapUserContextMapper ldapUserContextMapper
+
+  @Autowired
+  DefaultLoginPageGeneratingFilter defaultFilter
 
   @Autowired(required = false)
   List<MultiAuthConfigurer> additionalAuthProviders
 
   @Autowired
   SecurityProperties securityProperties
+
+  @Bean
+  DefaultLoginPageGeneratingFilter defaultFilter() {
+    new DefaultLoginPageGeneratingFilter(new org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter())
+  }
 
   @Override
   protected void configure(AuthenticationManagerBuilder auth) throws Exception {
@@ -106,9 +129,19 @@ class LdapSsoConfig extends WebSecurityConfigurerAdapter {
   @Override
   protected void configure(HttpSecurity http) throws Exception {
     http.formLogin()
+
     authConfig.configure(http)
+
+    // use this to force https via entrypoint
+    http.exceptionHandling().authenticationEntryPoint(entryPoint)
+
+    // tell our page to visit /login on post (uses /null otherwise)
+    defaultFilter.setAuthenticationUrl('/login')
+    // now enable the page by inserting in chain
+    http.addFilterBefore(defaultFilter, AbstractPreAuthenticatedProcessingFilter.class)
+
     additionalAuthProviders?.each {
-      it.configure(http)
+        it.configure(http)
     }
   }
 
@@ -160,5 +193,18 @@ class LdapSsoConfig extends WebSecurityConfigurerAdapter {
     String userDnPattern
     String userSearchBase
     String userSearchFilter
+  }
+
+  @Component
+  @ConditionalOnExpression('${ldap.enabled:false}')
+  static class ExternalSslAwareEntryPoint extends LoginUrlAuthenticationEntryPoint {
+
+    @Autowired
+    ExternalSslAwareEntryPoint(@Value('${services.deck.baseUrl}') String gateBaseUrl) {
+      super('/login')
+      if (gateBaseUrl.startsWith('https')){
+        this.setForceHttps(true)
+      }
+    }
   }
 }
